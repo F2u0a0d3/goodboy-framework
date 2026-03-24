@@ -37,7 +37,7 @@ Each stage adds one new offensive technique on top of the previous. Each Learnin
 | [**02**](stage-02-xor-loader/) | **XOR Cryptanalysis** | Known-plaintext attack, Index of Coincidence, entropy classification, memory scrubbing, VT Submission Paradox | 1,237 | Released |
 | [**03**](stage-03-aes-loader/) | **AES + Jigsaw** | RC4 stream cipher, entropy normalization via payload fragmentation, nonce/integrity verification, multi-scale entropy detection | 1,492 | Released |
 | [**04**](stage-04-api-hashing/) | **API Hashing** | Additive hash deep dive, cross-DLL resolution (kernel32+user32+ntdll), rainbow tables, gs:[0x60] detection invariant | 987 | Released |
-| 05 | APC Injection | Early Bird injection, cross-process execution, remote-side decryption | — | Planned |
+| [**05**](stage-05-process-inject/) | **APC Injection** | Early Bird APC, cross-process execution, remote-side decryption, decoder stub, triple encryption | 1,133 | Released |
 | 06 | Variant Analysis | Same technique, different keys — family clustering, YARA rule generalization | — | Planned |
 | 07 | "Direct Syscalls" | The name is a lie — and that's the lesson | — | Planned |
 | 08 | Indirect Syscalls | Call stack forensics, gadget scanning, SSN resolution | — | Planned |
@@ -163,8 +163,8 @@ The Learning Paths document the full forensic timeline of each binary's VT histo
 
 | Metric | Value |
 |--------|-------|
-| Stages | 15 (4 released, 11 planned) |
-| Total learning content | 5,300+ lines (released stages) |
+| Stages | 15 (5 released, 10 planned) |
+| Total learning content | 6,500+ lines (released stages) |
 | Exercises | 30+ hands-on (released stages) |
 | YARA rules | 6+ (with adversarial countermeasures) |
 | Sigma rules | 3+ (behavioral detection) |
