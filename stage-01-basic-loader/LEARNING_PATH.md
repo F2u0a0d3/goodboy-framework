@@ -1099,7 +1099,7 @@ description: >
 author: YOUR_NAME
 date: 2026/03/09
 references:
-    - https://attack.mitre.org/techniques/T1055/
+    - https://attack.mitre.org/techniques/T1620/
 logsource:
     category: process_access
     product: windows
@@ -1589,7 +1589,7 @@ This means reverse engineering the binary requires understanding two different h
 - Achieving 0/76 VT detection
 
 **Stage 03: AES Loader** introduces:
-- True AES-256-GCM encryption (stronger than XOR against known-plaintext attacks)
+- A stream cipher deliberately mislabeled "AES" (actually RC4 with custom envelope — the mislabeling is the lesson)
 - **Jigsaw fragmentation**: the encrypted payload is split into chunks and stored out-of-order, requiring a permutation map to reassemble before decryption
 
 Each stage adds exactly ONE new technique, building a complete evasion stack by Stage 14.
@@ -1620,7 +1620,7 @@ But your **Sigma rule** (RW→RX transition) still works — because the fundame
 |-----------|----|---------------|
 | Dynamic API Resolution | T1106 (Native API) | PEB walking + additive hash to resolve VirtualAlloc, VirtualProtect, CreateThread |
 | Obfuscated Files or Information | T1027 | XOR-encrypted shellcode in .rdata |
-| Process Injection: Thread Execution Hijacking | T1055 | CreateThread with shellcode as entry point (same-process) |
+| Reflective Code Loading | T1620 | VirtualAlloc + VirtualProtect + CreateThread to execute shellcode in own process (NOT cross-process injection — that begins at Stage 05) |
 | Deobfuscate/Decode Files or Information | T1140 | Runtime XOR decryption before execution |
 | Masquerading | T1036 | Hardware query APIs (GetSystemInfo, GlobalMemoryStatusEx) + CreateProcessW IAT anchor make binary look like a system utility |
 | Virtualization/Sandbox Evasion: System Checks | T1497.001 | Environment variable validation, KUSER_SHARED_DATA uptime check |

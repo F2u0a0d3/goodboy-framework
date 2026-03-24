@@ -741,17 +741,19 @@ tags:
     - attack.t1106
 
 logsource:
-    category: process_access
+    category: process_creation
     product: windows
+    # NOTE: VirtualProtect cannot be detected via Sysmon events.
+    # Sysmon Event ID 10 is ProcessAccess (OpenProcess), NOT memory protection changes.
+    # True detection of RW->RX transitions requires ETW (Microsoft-Windows-Kernel-Memory)
+    # or an EDR that instruments NtProtectVirtualMemory.
+    # This rule detects the process creation with indicators of dynamic API resolution.
 
 detection:
-    # Two separate VirtualAlloc calls followed by VirtualProtect
-    alloc_rw:
-        EventID: 10  # Sysmon ProcessAccess or custom ETW
-        GrantedAccess|contains: '0x04'  # PAGE_READWRITE
-    protect_rx:
-        EventID: 10
-        GrantedAccess|contains: '0x20'  # PAGE_EXECUTE_READ
+    selection:
+        CallTrace|contains:
+            - 'VirtualAlloc'
+            - 'VirtualProtect'
 
     # No loaded module at the execution address
     filter_legitimate:
@@ -1211,8 +1213,8 @@ But your **Sigma rule** (RW→RX memory transition) still works. The loader pipe
 | Deobfuscate/Decode Files or Information | T1140 | XOR decryption of embedded shellcode |
 | Obfuscated Files or Information | T1027 | XOR-encrypted payload in .rdata |
 | Dynamic API Resolution | T1106 | PEB-walking + hash-based API resolution |
-| Process Injection (same-process thread) | T1055 | CreateThread with shellcode entry point |
-| Indicator Removal: File Deletion | T1070.004 | Memory scrubbing (heap buffer zeroing) |
+| Reflective Code Loading | T1620 | VirtualAlloc + VirtualProtect + CreateThread in own process |
+| Indicator Removal | T1070 | Memory scrubbing via heap buffer zeroing (NOT file deletion — no sub-technique applies to memory wiping) |
 | Masquerading | T1036 | Benign code gates (environment checks, std library usage) |
 
 ### Further Reading (2025-2026)

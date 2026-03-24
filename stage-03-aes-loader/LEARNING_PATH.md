@@ -11,7 +11,7 @@
 | **Platform** | Windows x64 |
 | **Binary** | `aes-loader.exe` (~290KB, Rust, PE64) |
 | **Prerequisites** | Stage 01 (loader pipeline, API hashing), Stage 02 (XOR crypto, entropy concepts) |
-| **MITRE ATT&CK** | T1027.002, T1140, T1106, T1055 |
+| **MITRE ATT&CK** | T1027, T1140, T1106, T1620 |
 | **VT Score** | **0/76 → 5/76 → 3/76** (achieved 0/76 at R14, burned to 5/76 by March 9, currently 3/76 after hash algorithm tweak) |
 
 ### VT Detection Journey
@@ -1023,7 +1023,7 @@ rule Jigsaw_Permutation_Map
         author      = "Goodboy Framework"
         stage       = "03"
         severity    = "medium"
-        technique   = "T1027.002 - Obfuscated Files or Information: Software Packing"
+        technique   = "T1027 - Obfuscated Files or Information (jigsaw fragmentation)"
 
     strings:
         // usize::MAX sentinel (padding marker) — 8 bytes of 0xFF
@@ -1460,12 +1460,12 @@ Stages 01-03 all use the **same API resolution mechanism** (PEB-walking with add
 
 | Technique | ID | How It's Used |
 |-----------|----|---------------|
-| Software Packing | T1027.002 | Jigsaw fragmentation (payload split + shuffled + padded) |
+| Obfuscated Files or Information | T1027 | Jigsaw fragmentation (payload split + shuffled + padded) + XOR-encrypted shellcode |
 | Deobfuscate/Decode Files | T1140 | Runtime jigsaw reassembly + RC4 decryption |
 | Dynamic API Resolution | T1106 | PEB-walking hash-based API resolution |
-| Process Injection (same-process) | T1055 | CreateThread with shellcode entry point |
+| Reflective Code Loading | T1620 | VirtualAlloc + VirtualProtect + CreateThread in own process |
 | Indicator Removal | T1070 | write_volatile heap scrubbing (remove decrypted shellcode from memory) |
-| Masquerading | T1036 | MessageBox startup, GUI window lifecycle, mislabeled "AES" |
+| Masquerading | T1036 | Crypto module mislabeled "AES" (actually RC4) |
 
 ### Further Reading (2025-2026)
 
