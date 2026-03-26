@@ -5,34 +5,28 @@
 | Field | Value |
 |-------|-------|
 | **Module Name** | Sandbox Detection and Environment Fingerprinting |
-| **Level** | Intermediate-Advanced |
+| **Level** | Hard |
 | **Estimated Time** | 5-6 hours |
 | **Category** | Anti-Analysis / Evasion |
 | **Platform** | Windows x64 |
-| **Binary** | `anti-sandbox.exe` (~264KB, Rust, PE64, self-contained) |
+| **Binary** | `anti-sandbox.exe` (~258KB, Rust, PE64, uses common library) |
 | **Prerequisites** | Stage 09 (anti-debug fundamentals) |
-| **VT Score** | **0/76 → 1/76** (achieved 0/76 on 2026-03-12, decayed to 1/76 by 2026-03-17) |
 
-### VT Detection Journey
+### Key Evasion Lesson
 
 ```
- ██████████████████████████████████████ 0/76  ← ACHIEVED (March 12, 2026)
- █████████████████████████████████████░ 1/76  ← CURRENT  (March 17, 2026)
-                                               ESET Agent.ION (sample-burned)
-
- KEY EVASION LESSON: The original anti-sandbox implementation used string-based
- VM detection (username checks for "sandbox"/"malware", file checks for
- "VBoxMouse.sys", MAC OUI prefixes). These STRINGS triggered CrowdStrike ML
- at 60% confidence — the word "sandbox" in your binary IS a malware signature.
+ The original anti-sandbox implementation used string-based VM detection
+ (username checks for "sandbox"/"malware", file checks for "VBoxMouse.sys",
+ MAC OUI prefixes). These STRINGS triggered CrowdStrike ML at 60% confidence
+ — the word "sandbox" in your binary IS a malware signature.
 
  The fix: remove ALL string-based VM/sandbox checks. Keep ONLY hardware-metric
- checks (CPU, RAM, disk, uptime, screen) that use numeric comparisons without
- suspicious strings. Result: 0/76.
+ checks (CPU, RAM, disk, uptime, screen) that use numeric comparisons.
 
- This binary uses direct windows-sys imports (GetSystemInfo, GlobalMemoryStatusEx,
- GetDiskFreeSpaceExW, GetTickCount64, GetSystemMetrics) which are CFG-safe.
- Self-contained (no common library) — all PEB walking, hash resolution,
- anti-debug, and sandbox checks are inlined.
+ Sandbox checks use direct windows-sys imports (GetSystemInfo, GlobalMemoryStatusEx,
+ GetDiskFreeSpaceExW, GetTickCount64, GetSystemMetrics) — CFG-safe.
+ Anti-debug delegated to common library. Execution uses HeapCreate with
+ HEAP_CREATE_ENABLE_EXECUTE — no VirtualAlloc, no VirtualProtect in IAT.
 ```
 
 ---
@@ -169,7 +163,7 @@ A threshold of 3 separates default sandboxes (score 3-5) from real workstations 
 
 A critical evasion lesson from the development of this binary:
 
-> **Sandbox evasion string literals trigger CrowdStrike ML**: Plaintext strings "sandbox", "malware", "virus", "vmmouse.sys", "VBoxMouse.sys" etc. in the binary trigger CrowdStrike win/malicious_confidence_60%. Removing them and keeping only hardware-metric checks achieved 0/76.
+> **Sandbox evasion string literals trigger CrowdStrike ML**: Plaintext strings "sandbox", "malware", "virus", "vmmouse.sys", "VBoxMouse.sys" etc. in the binary trigger CrowdStrike win/malicious_confidence_60%. Removing them and keeping only hardware-metric checks killed CrowdStrike's detection entirely.
 
 Earlier versions included username checks, MAC OUI checks, registry probes, and driver file checks. ALL of these required string literals that ARE malware signatures:
 - `"sandbox"` → AV ML signature
@@ -178,19 +172,37 @@ Earlier versions included username checks, MAC OUI checks, registry probes, and 
 
 The hardware-only approach uses NUMERIC comparisons — no suspicious strings, no filesystem access patterns, no registry probes. The APIs (GetSystemInfo, GlobalMemoryStatusEx, etc.) are the same ones that ANY system utility calls.
 
-### Architecture: 7-Gate Progression
+### Architecture: 5-Gate Progression
 
 ```
-Gate 1: init_app_config()           ← benign config (BTreeMap, env vars, paths)
-Gate 2: verify_env()                ← environment validation (SystemRoot, USERPROFILE, etc.)
-Gate 3: preflight()                 ← benign preflight (env vars, directory checks)
-Gate 4: PEB.BeingDebugged           ← quick anti-debug (direct PEB read)
-Gate 5: run_gui_lifecycle()         ← GUI camouflage (RegisterClassW + CreateWindowExW + message pump)
-Gate 6: is_debugged()               ← full anti-debug gauntlet (7 checks from Stage 09)
-Gate 7: check_sandbox() ≥ 3        ← hardware sandbox detection (Stage 10 NEW)
+Gate 1: init_app_environment()      ← benign env check (BTreeMap, 5 env vars, paths)
+Gate 2: common::benign::preflight() ← benign preflight from shared library (env vars, dir checks)
+Gate 3: run_window_lifecycle()      ← GUI camouflage (RegisterClassW + CreateWindowExW + message pump)
+Gate 4: antidebug::bail_if_debugged() ← anti-debug gauntlet from common library (7 checks: PEB×2, NtQIP×3, RDTSC, HW BP)
+Gate 5: check_sandbox() ≥ 3        ← hardware sandbox detection (Stage 10 NEW — inline, CFG-safe)
 ```
 
-Each stage adds one or two gates. By Stage 10, the binary has 7 sequential checks that an analyst or sandbox must pass before reaching the payload. All gates are self-contained (no common library).
+Gates 1-2 provide benign code mass (BTreeMap, HashMap, HashSet, std::fs, std::path operations) that shifts the offensive/benign code ratio below ML classifier thresholds. Gate 3 adds legitimate Win32 API patterns. Gate 4 delegates to the common library's anti-debug module. Gate 5 is the new sandbox detection taught in this stage.
+
+**Why common library?** A self-contained version scored significantly worse on ML classifiers because it lacked ~100KB of benign std library code that the common library provides via LTO. This demonstrates that **code mass ratio is the primary ML evasion lever** — the same offensive code that triggers ML alone can pass when surrounded by legitimate library code.
+
+### Execution Technique: HeapCreate(HEAP_CREATE_ENABLE_EXECUTE)
+
+Stages 01-09 all used the same execution pattern: `VirtualAlloc(RW)` → copy shellcode → `VirtualProtect(RX)` → `CreateThread`. This three-API pattern is the #1 ML classifier signal for shellcode loaders — it's the "VirtualAlloc/VirtualProtect triplet" that every AV vendor's training data includes.
+
+Stage 10 replaces this with a different approach:
+```
+HeapCreate(HEAP_CREATE_ENABLE_EXECUTE)  → creates executable heap (RWX from birth)
+HeapAlloc(heap, 0, size)                → allocates from executable heap
+memcpy(addr, shellcode, size)           → copies decrypted shellcode
+CreateThread(addr)                       → executes
+```
+
+**Why this evades**: The RW→RX memory protection transition (VirtualAlloc + VirtualProtect) is the most monitored behavioral signal in EDR. HeapCreate with `HEAP_CREATE_ENABLE_EXECUTE` (0x00040000) creates a heap where all allocations are executable from creation — no VirtualProtect call needed. HeapCreate and HeapAlloc are ubiquitous in legitimate software (C runtime, COM, .NET). They don't appear in the "offensive API" category of ML training data.
+
+**Trade-off**: RWX heap memory is itself suspicious to some advanced EDRs (it violates W^X discipline). But most ML classifiers weight the VirtualAlloc→VirtualProtect transition much more heavily than HeapCreate(EXECUTE), because the former appears in 95%+ of known shellcode loaders while the latter is rare.
+
+**Blue team note**: Monitor for `HeapCreate` calls with `dwflags` containing `0x00040000`. This flag is legitimate but uncommon — most heaps don't need execute permission.
 
 ---
 
@@ -257,21 +269,16 @@ Key sandbox weaknesses:
 
 A scoring system reduces false positives on legitimate VM users:
 
-1. **Single-check approach**: If `check_vm_registry_keys()` alone triggered exit, every developer running VirtualBox would be affected. This is too aggressive.
+1. **Single-check approach**: If only CPU count determined the outcome, a legitimate low-spec laptop (1 core) would trigger exit. Too aggressive.
 
-2. **Scoring approach**: A developer's VM typically has:
-   - 4+ CPUs (score: 0), 8+ GB RAM (0), real username (0), real screen (0)
-   - But: VirtualBox registry keys (+2), VBox MAC address (+2)
-   - Total: 4 — above threshold, still exits
+2. **This binary's uniform scoring** (all +1, threshold 3):
+   - Default sandbox: CPU(1)=+1, RAM(2GB)=+1, Disk(40GB)=+1, Uptime(2min)=+1, Screen(1024)=0 → score 4 ✓ (detected)
+   - Real workstation: CPU(8)=0, RAM(16GB)=0, Disk(500GB)=0, Uptime(4320min)=0, Screen(1920)=0 → score 0 (passes)
+   - Hardened VM: CPU(4)=0, RAM(8GB)=0, Disk(100GB)=0, Uptime(5min)=+1, Screen(1920)=0 → score 1 (passes — only uptime fails)
 
-3. **Optimal scoring**: The threshold of 3 with weighted scores means:
-   - A sandbox with 1 CPU + sandbox username + sleep accel = 1+2+3 = 6 ✓ (detected)
-   - A developer VM with only VBox keys = 2 (below threshold, safe)
-   - Adding MAC OUI check = 2+2 = 4 (detected — developer VMs still caught)
+3. **Production-grade alternative** (weighted, NOT implemented in this binary): More sophisticated malware uses varied weights — registry/MAC checks at +2, sleep acceleration at +3 — with thresholds of 10-15. This catches more sandboxes but requires string-based checks that are AV ML signatures (the exact reason this binary avoids them).
 
-4. **The real trade-off**: Malware authors must balance detection rate (catch all sandboxes) vs. false positive rate (don't crash on legitimate VMs). The scoring system allows tuning this balance by adjusting weights and threshold.
-
-In practice, sophisticated malware uses much higher thresholds (10-15) with many low-weight checks, accepting that some sandboxes may pass in exchange for never false-positive-ing on real users.
+4. **The trade-off**: Uniform +1 scoring is simple and avoids AV detection. Weighted scoring catches more edge cases but adds string literals that ML classifiers flag. This binary prioritizes evasion over detection breadth.
 
 </details>
 
@@ -310,7 +317,7 @@ Real system:
 
 ### Exercise 2.1: Hardening Your Analysis VM
 
-**Question**: How would you configure a VirtualBox analysis VM to pass all four hardware checks?
+**Question**: How would you configure a VirtualBox analysis VM to pass all five hardware checks?
 
 <details>
 <summary>Answer</summary>
@@ -337,6 +344,12 @@ VirtualBox settings:
    ```
    Boot the VM and wait 30+ minutes before running samples
    Or: use a saved state (not snapshot) that preserves uptime
+   ```
+
+5. **Screen Resolution** (pass `< 800x600` check):
+   ```
+   Install Guest Additions → set 1920x1080 resolution → remove GA afterward
+   Or: Settings → Display → Screen → Video Memory: 128 MB + Scale Factor: 100%
    ```
 
 Key insight: These are the **cheapest** checks to bypass. Allocating 4 CPUs and 8 GB RAM to an analysis VM is trivial. The uptime check requires patience or saved state tricks. This is why hardware checks have low weight (+1) in the scoring system.
@@ -368,7 +381,9 @@ Special rule: computer name < 4 characters → suspicious
   (auto-generated sandbox names are often short random strings)
 ```
 
-### Screen Resolution
+### Screen Resolution (IMPLEMENTED — Check 5 in Stage 10 Binary)
+
+> **Note**: Unlike the other techniques in this section, screen resolution IS implemented as check 5 in `check_sandbox()`. It's listed here for completeness alongside other environment fingerprinting techniques.
 
 ```
 GetSystemMetrics(SM_CXSCREEN) → width
@@ -380,7 +395,7 @@ Real:    1920x1080+ (modern monitors)
 Check: width < 800 OR height < 600 → sandbox
 ```
 
-### Process Count
+### Process Count (NOT in binary)
 
 ```
 CreateToolhelp32Snapshot + Process32First/NextW → count all processes
@@ -539,7 +554,7 @@ Detection:
   if elapsed < 1500 → sleep was accelerated → SANDBOX
 ```
 
-**Weight +3**: This is the highest-weighted single check because it has virtually zero false positives. No legitimate system completes a 2-second sleep in under 1.5 seconds.
+**Recommended weight +3 in production implementations** (NOT used in this binary — this binary uses uniform +1 for all checks). This would be the highest-weighted check because it has virtually zero false positives. No legitimate system completes a 2-second sleep in under 1.5 seconds.
 
 ### Cursor Movement Detection
 
@@ -596,87 +611,103 @@ Run 3: GetSystemInfo → GlobalMemoryStatusEx → RegOpenKeyExW → ...
 
 ## Section 6: Detection Engineering
 
-### YARA Rule: Anti-Sandbox Binary
+### YARA Rule: Hardware-Only Anti-Sandbox (Matches This Binary)
 
 ```yara
-rule Antisandbox_Environment_Checks
+rule Antisandbox_Hardware_Metrics
 {
     meta:
-        description = "Detects binary with multiple sandbox evasion techniques"
+        description = "Detects binary querying multiple hardware metrics for sandbox detection"
         author = "Goodboy Course"
         stage = "10"
 
     strings:
-        // GetSystemInfo for CPU count
-        $hw_cpu = { 48 8D (4C|44|54|5C) 24 ?? E8 }
+        // Hardware metric APIs in IAT (this binary's actual detection surface)
+        $api_sysinfo = "GetSystemInfo" ascii
+        $api_memstat = "GlobalMemoryStatusEx" ascii
+        $api_disk    = "GetDiskFreeSpaceExW" ascii
+        $api_uptime  = "GetTickCount64" ascii
+        $api_screen  = "GetSystemMetrics" ascii
 
-        // GlobalMemoryStatusEx
-        $hw_ram = "GlobalMemoryStatusEx" ascii
+        // Executable heap creation (new in Stage 10)
+        $heap_exec   = "HeapCreate" ascii
 
-        // GetDiskFreeSpaceExW
-        $hw_disk = "GetDiskFreeSpaceExW" ascii
-
-        // GetTickCount64 for uptime/timing
-        $timing = "GetTickCount64" ascii
-
-        // GetUserNameW
-        $env_user = "GetUserNameW" ascii
-
-        // GetComputerNameW
-        $env_comp = "GetComputerNameW" ascii
-
-        // VM MAC OUI bytes
-        $mac_vmware1 = { 00 0C 29 }
-        $mac_vmware2 = { 00 50 56 }
-        $mac_vbox    = { 08 00 27 }
-        $mac_hyperv  = { 00 15 5D }
-        $mac_qemu    = { 52 54 00 }
-
-        // VM registry paths (even obfuscated, the deobfuscated strings hit memory)
-        $reg_vmware = "VMware" wide ascii nocase
-        $reg_vbox = "VirtualBox" wide ascii nocase
+        // Threshold comparison pattern: cmp reg, 3 (SANDBOX_THRESHOLD)
+        $threshold   = { 83 (F8|F9|FA|FB|FC|FD|FE|FF) 03 }
 
     condition:
         uint16(0) == 0x5A4D and
-        (2 of ($hw_*) and 1 of ($env_*)) or
-        (3 of ($mac_*)) or
-        ($reg_vmware and $reg_vbox)
+        filesize < 500KB and
+        3 of ($api_*) and
+        $heap_exec and
+        $threshold
 }
 ```
 
-### Sigma Rule: Sandbox Detection Behavior
+> **Note**: This rule targets the Stage 10 binary's actual IAT — hardware metric APIs + HeapCreate. It does NOT look for username checks, MAC OUI prefixes, or VM registry strings because this binary intentionally avoids those (they are AV ML signatures).
+
+### YARA Rule: General Anti-Sandbox (Reference — for full implementations)
+
+```yara
+rule Antisandbox_VM_Artifacts
+{
+    meta:
+        description = "Detects binary with VM artifact checks (NOT in Stage 10 binary)"
+        author = "Goodboy Course"
+        stage = "10-reference"
+
+    strings:
+        $reg_vmware = "VMware" wide ascii nocase
+        $reg_vbox = "VirtualBox" wide ascii nocase
+        $mac_vmware = { 00 0C 29 }
+        $mac_vbox   = { 08 00 27 }
+        $mac_hyperv = { 00 15 5D }
+
+    condition:
+        uint16(0) == 0x5A4D and
+        (($reg_vmware and $reg_vbox) or (2 of ($mac_*)))
+}
+```
+
+### Sigma Rule: Hardware Metric Sandbox Fingerprinting (Matches This Binary)
 
 ```yaml
-title: Process Performs Sandbox Environment Fingerprinting
+title: Process Imports Multiple Hardware Fingerprinting APIs
 id: d4e5f6a7-b8c9-0123-def0-stage10
 status: experimental
 description: >
-    Detects a process performing multiple environment queries
-    characteristic of sandbox detection
+    Detects a PE binary importing the combination of hardware metric APIs
+    characteristic of sandbox detection. This binary uses GetSystemInfo +
+    GlobalMemoryStatusEx + GetDiskFreeSpaceExW + GetTickCount64 +
+    GetSystemMetrics — a distinctive cluster.
 logsource:
     product: windows
-    service: sysmon
+    category: image_load
 detection:
-    selection_sysinfo:
+    selection_process:
+        EventID: 7  # Sysmon Image Loaded
+        ImageLoaded|endswith:
+            - '\kernel32.dll'
+            - '\kernelbase.dll'
+    filter_legitimate:
+        Image|endswith:
+            - '\svchost.exe'
+            - '\explorer.exe'
+            - '\taskmgr.exe'
+            - '\systeminfo.exe'
+    selection_small_binary:
         EventID: 1  # Process creation
-    selection_registry:
-        EventID: 13  # Registry value set/query
-        TargetObject|contains:
-            - 'VMware'
-            - 'VirtualBox'
-            - 'VBoxGuest'
-    selection_file:
-        EventID: 1
-        CommandLine|contains:
-            - 'vmmouse.sys'
-            - 'VBoxGuest.sys'
-    timeframe: 10s
-    condition: selection_registry or selection_file
-level: medium
+        Image|endswith: '.exe'
+    condition: selection_process and selection_small_binary and not filter_legitimate
+level: low
 tags:
     - attack.defense_evasion
     - attack.t1497.001
+    - attack.discovery
+    - attack.t1082
 ```
+
+> **Note**: Hardware metric APIs are legitimate — GetSystemInfo is called by thousands of programs. This rule has a HIGH false positive rate and must be combined with other indicators (executable heap creation, small PE size, anti-debug behavior). In practice, ETW-based API call monitoring (Microsoft-Windows-Kernel-Audit-API-Calls) is more effective for detecting rapid hardware fingerprinting sequences.
 
 ---
 
@@ -791,6 +822,324 @@ Hardening suggestions:
   - Change MAC: VBoxManage modifyvm "VM" --macaddress1 D89EF3A12B45
 ```
 
+### Python Script 1: Sandbox Score Calculator (run on analysis VM)
+
+```python
+#!/usr/bin/env python3
+"""Evaluate current system against Stage 10 sandbox checks.
+Run inside your analysis VM to see what the binary sees."""
+
+import ctypes
+import ctypes.wintypes as wt
+import struct, sys, os
+
+kernel32 = ctypes.windll.kernel32
+user32 = ctypes.windll.user32
+
+class MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [("dwLength", wt.DWORD), ("dwMemoryLoad", wt.DWORD),
+                ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+
+class SYSTEM_INFO(ctypes.Structure):
+    _fields_ = [("wProcessorArchitecture", wt.WORD), ("wReserved", wt.WORD),
+                ("dwPageSize", wt.DWORD), ("lpMinAppAddr", ctypes.c_void_p),
+                ("lpMaxAppAddr", ctypes.c_void_p), ("dwActiveProcessorMask", ctypes.POINTER(ctypes.c_ulong)),
+                ("dwNumberOfProcessors", wt.DWORD), ("dwProcessorType", wt.DWORD),
+                ("dwAllocationGranularity", wt.DWORD), ("wProcessorLevel", wt.WORD),
+                ("wProcessorRevision", wt.WORD)]
+
+THRESHOLD = 3
+
+def check_cpu():
+    si = SYSTEM_INFO()
+    kernel32.GetSystemInfo(ctypes.byref(si))
+    cores = si.dwNumberOfProcessors
+    fail = cores < 2
+    return cores, fail, "+1" if fail else "+0"
+
+def check_ram():
+    mem = MEMORYSTATUSEX()
+    mem.dwLength = ctypes.sizeof(mem)
+    kernel32.GlobalMemoryStatusEx(ctypes.byref(mem))
+    gb = mem.ullTotalPhys / (1024**3)
+    fail = gb < 4
+    return f"{gb:.1f} GB", fail, "+1" if fail else "+0"
+
+def check_disk():
+    free = ctypes.c_uint64()
+    total = ctypes.c_uint64()
+    total_free = ctypes.c_uint64()
+    kernel32.GetDiskFreeSpaceExW("C:\\", ctypes.byref(free), ctypes.byref(total), ctypes.byref(total_free))
+    gb = total.value / (1024**3)
+    fail = gb < 60
+    return f"{gb:.0f} GB", fail, "+1" if fail else "+0"
+
+def check_uptime():
+    kernel32.GetTickCount64.restype = ctypes.c_uint64
+    ms = kernel32.GetTickCount64()
+    minutes = ms // 60000
+    fail = minutes < 30
+    return f"{minutes} min", fail, "+1" if fail else "+0"
+
+def check_screen():
+    SM_CXSCREEN, SM_CYSCREEN = 0, 1
+    w = user32.GetSystemMetrics(SM_CXSCREEN)
+    h = user32.GetSystemMetrics(SM_CYSCREEN)
+    fail = w < 800 or h < 600
+    return f"{w}x{h}", fail, "+1" if fail else "+0"
+
+checks = [
+    ("CPU Cores",    *check_cpu(),    "< 2"),
+    ("RAM",          *check_ram(),    "< 4 GB"),
+    ("Disk",         *check_disk(),   "< 60 GB"),
+    ("Uptime",       *check_uptime(), "< 30 min"),
+    ("Screen",       *check_screen(), "< 800x600"),
+]
+
+print("Sandbox Detection Score (Stage 10 checks)")
+print("=" * 60)
+
+score = 0
+for name, value, fail, delta, threshold in checks:
+    status = "\033[91mFAIL\033[0m" if fail else "\033[92mPASS\033[0m"
+    if fail:
+        score += 1
+    print(f"  [{status}] {name:12s}: {str(value):12s} (threshold: {threshold:10s}) {delta}")
+
+print("=" * 60)
+verdict = "SANDBOX DETECTED" if score >= THRESHOLD else "REAL SYSTEM (passes)"
+color = "\033[91m" if score >= THRESHOLD else "\033[92m"
+print(f"  Total Score: {score} / Threshold: {THRESHOLD}")
+print(f"  Result: {color}{verdict}\033[0m")
+
+if "--harden" in sys.argv and score > 0:
+    print("\nHardening suggestions:")
+    for name, value, fail, _, threshold in checks:
+        if fail:
+            if "CPU" in name:
+                print("  - Settings > System > Processor > Processor(s): 4+")
+            elif "RAM" in name:
+                print("  - Settings > System > Motherboard > Base Memory: 8192+ MB")
+            elif "Disk" in name:
+                print("  - VBoxManage modifymedium disk vm.vdi --resize 102400")
+            elif "Uptime" in name:
+                print("  - Boot VM and wait 30+ minutes before running samples")
+            elif "Screen" in name:
+                print("  - Set resolution to 1920x1080 (install Guest Additions temporarily)")
+```
+
+### Python Script 2: PE Anti-Sandbox API Detector (static analysis)
+
+```python
+#!/usr/bin/env python3
+"""Scan a PE binary's IAT for sandbox detection API clusters.
+Detects the Stage 10 pattern: hardware metric APIs + executable heap."""
+
+import struct, sys, os
+
+def read_pe_imports(path):
+    """Extract imported function names from PE IAT."""
+    with open(path, "rb") as f:
+        data = f.read()
+
+    if data[:2] != b"MZ":
+        return []
+
+    e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[e_lfanew:e_lfanew+4] != b"PE\x00\x00":
+        return []
+
+    # Import directory RVA (offset 0x90 in optional header for PE64)
+    import_rva = struct.unpack_from("<I", data, e_lfanew + 0x90)[0]
+    if import_rva == 0:
+        return []
+
+    # Find section containing import directory
+    num_sections = struct.unpack_from("<H", data, e_lfanew + 6)[0]
+    opt_size = struct.unpack_from("<H", data, e_lfanew + 20)[0]
+    sec_off = e_lfanew + 24 + opt_size
+
+    def rva_to_offset(rva):
+        for i in range(num_sections):
+            s = sec_off + i * 40
+            va = struct.unpack_from("<I", data, s + 12)[0]
+            vs = struct.unpack_from("<I", data, s + 8)[0]
+            raw = struct.unpack_from("<I", data, s + 20)[0]
+            if va <= rva < va + vs:
+                return rva - va + raw
+        return None
+
+    imports = []
+    off = rva_to_offset(import_rva)
+    if off is None:
+        return []
+
+    while True:
+        ilt_rva = struct.unpack_from("<I", data, off)[0]
+        name_rva = struct.unpack_from("<I", data, off + 12)[0]
+        if ilt_rva == 0 and name_rva == 0:
+            break
+
+        dll_off = rva_to_offset(name_rva)
+        if dll_off:
+            dll = data[dll_off:data.index(b"\x00", dll_off)].decode("ascii", errors="replace")
+        else:
+            dll = "?"
+
+        # Walk ILT
+        ilt_off = rva_to_offset(ilt_rva)
+        if ilt_off:
+            while True:
+                entry = struct.unpack_from("<Q", data, ilt_off)[0]
+                if entry == 0:
+                    break
+                if not (entry >> 63):  # not ordinal
+                    hint_off = rva_to_offset(entry & 0x7FFFFFFF)
+                    if hint_off:
+                        name = data[hint_off+2:data.index(b"\x00", hint_off+2)].decode("ascii", errors="replace")
+                        imports.append((dll.lower(), name))
+                ilt_off += 8
+
+        off += 20  # next import descriptor
+
+    return imports
+
+# Sandbox detection API clusters
+SANDBOX_APIS = {
+    "GetSystemInfo", "GlobalMemoryStatusEx", "GetDiskFreeSpaceExW",
+    "GetDiskFreeSpaceExA", "GetTickCount64", "GetTickCount",
+    "GetSystemMetrics",
+}
+
+HEAP_EXEC_APIS = {"HeapCreate", "HeapAlloc"}
+CLASSIC_LOADER = {"VirtualAlloc", "VirtualProtect", "CreateThread"}
+ANTIDEBUG_APIS = {"IsDebuggerPresent", "NtQueryInformationProcess",
+                  "GetThreadContext", "CheckRemoteDebuggerPresent"}
+
+if len(sys.argv) < 2:
+    print(f"Usage: {sys.argv[0]} <binary.exe>")
+    sys.exit(1)
+
+path = sys.argv[1]
+imports = read_pe_imports(path)
+func_names = {name for _, name in imports}
+dll_names = {dll for dll, _ in imports}
+
+print(f"Analyzing: {os.path.basename(path)}")
+print(f"Total imports: {len(imports)} functions from {len(dll_names)} DLLs")
+print()
+
+# Check for sandbox detection cluster
+sandbox_found = func_names & SANDBOX_APIS
+heap_found = func_names & HEAP_EXEC_APIS
+classic_found = func_names & CLASSIC_LOADER
+debug_found = func_names & ANTIDEBUG_APIS
+
+print("Sandbox Detection APIs:")
+for api in sorted(SANDBOX_APIS):
+    status = "\033[91m[FOUND]\033[0m" if api in func_names else "       "
+    print(f"  {status} {api}")
+
+print(f"\n  Match: {len(sandbox_found)}/{len(SANDBOX_APIS)}"
+      f" — {'SANDBOX DETECTION LIKELY' if len(sandbox_found) >= 3 else 'insufficient evidence'}")
+
+print("\nExecution Technique:")
+if heap_found:
+    print(f"  \033[93m[HEAP EXEC]\033[0m HeapCreate+HeapAlloc (Stage 10 pattern)")
+    print(f"  No VirtualAlloc/VirtualProtect — avoids RW->RX transition monitoring")
+if classic_found:
+    print(f"  \033[91m[CLASSIC]\033[0m {', '.join(sorted(classic_found))} (Stage 01-09 pattern)")
+
+print("\nAnti-Debug APIs:")
+for api in sorted(ANTIDEBUG_APIS):
+    if api in func_names:
+        print(f"  \033[91m[FOUND]\033[0m {api}")
+if not debug_found:
+    print("  None in IAT (may use PEB direct read or common library)")
+
+print(f"\nVerdict: ", end="")
+if len(sandbox_found) >= 3 and heap_found:
+    print("\033[91mStage 10 anti-sandbox pattern detected (heap exec + hardware metrics)\033[0m")
+elif len(sandbox_found) >= 3 and classic_found:
+    print("\033[91mSandbox detection with classic loader pattern\033[0m")
+elif len(sandbox_found) >= 3:
+    print("\033[93mSandbox detection APIs present, execution method unclear\033[0m")
+else:
+    print("\033[92mNo strong sandbox detection indicators\033[0m")
+```
+
+### Python Script 3: HeapCreate(EXECUTE) Hunter (memory forensics)
+
+```python
+#!/usr/bin/env python3
+"""Detect HeapCreate(HEAP_CREATE_ENABLE_EXECUTE) usage in a PE binary.
+Scans .text section for the 0x00040000 constant used with HeapCreate."""
+
+import struct, sys
+
+HEAP_CREATE_ENABLE_EXECUTE = 0x00040000
+
+if len(sys.argv) < 2:
+    print(f"Usage: {sys.argv[0]} <binary.exe>")
+    sys.exit(1)
+
+with open(sys.argv[1], "rb") as f:
+    data = f.read()
+
+e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+num_sections = struct.unpack_from("<H", data, e_lfanew + 6)[0]
+opt_size = struct.unpack_from("<H", data, e_lfanew + 20)[0]
+sec_off = e_lfanew + 24 + opt_size
+
+# Check IAT for HeapCreate
+has_heapcreate = b"HeapCreate\x00" in data
+
+# Scan .text for the constant 0x00040000
+text_hits = []
+for i in range(num_sections):
+    s = sec_off + i * 40
+    name = data[s:s+8].rstrip(b"\x00").decode("ascii", errors="replace")
+    raw_off = struct.unpack_from("<I", data, s + 20)[0]
+    raw_sz = struct.unpack_from("<I", data, s + 16)[0]
+
+    if name == ".text":
+        section = data[raw_off:raw_off + raw_sz]
+        # Search for mov reg, 0x00040000 pattern
+        # Common encodings: C7 xx 00 00 04 00 (mov [mem], imm32)
+        #                   B8 00 00 04 00 (mov eax, imm32)
+        #                   41 B8 00 00 04 00 (mov r8d, imm32)
+        needle = struct.pack("<I", HEAP_CREATE_ENABLE_EXECUTE)
+        pos = 0
+        while True:
+            idx = section.find(needle, pos)
+            if idx == -1:
+                break
+            text_hits.append(raw_off + idx)
+            pos = idx + 1
+
+print(f"HeapCreate(HEAP_CREATE_ENABLE_EXECUTE) Analysis")
+print(f"=" * 50)
+print(f"IAT contains HeapCreate: {'YES' if has_heapcreate else 'NO'}")
+print(f"0x{HEAP_CREATE_ENABLE_EXECUTE:08X} in .text:  {len(text_hits)} hit(s)")
+
+if has_heapcreate and text_hits:
+    print(f"\n\033[91m[DETECTED]\033[0m Executable heap creation pattern")
+    print(f"  HeapCreate imported + HEAP_CREATE_ENABLE_EXECUTE constant found")
+    print(f"  This binary allocates executable memory without VirtualAlloc")
+    print(f"  Offsets: {', '.join(f'0x{h:X}' for h in text_hits[:5])}")
+elif has_heapcreate:
+    print(f"\n\033[93m[SUSPICIOUS]\033[0m HeapCreate imported but constant not found in .text")
+    print(f"  May use dynamic flag value or different code pattern")
+elif text_hits:
+    print(f"\n\033[93m[INFO]\033[0m Constant found but HeapCreate not in IAT")
+    print(f"  May resolve HeapCreate dynamically")
+else:
+    print(f"\n\033[92m[CLEAN]\033[0m No executable heap indicators")
+```
+
 ---
 
 ## Adversarial Thinking — Evolving Past Sandbox Detection
@@ -836,7 +1185,7 @@ Query the SMBIOS/DMI tables via `GetSystemFirmwareTable()`. The BIOS manufacture
 Some system information is available via direct memory read of the KUSER_SHARED_DATA structure at `0x7FFE0000` (mapped read-only into every process). No API call, no hook surface:
 
 ```
-0x7FFE0000 + 0x0320: InterruptTime   (uptime — already used in Gate 3)
+0x7FFE0000 + 0x0320: InterruptTime   (uptime — this binary uses GetTickCount64 in Gate 5 instead)
 0x7FFE0000 + 0x02D4: KdDebuggerEnabled (bonus: kernel debugger check)
 0x7FFE0000 + 0x0264: NumberOfPhysicalPages (RAM, requires page size math)
 ```
@@ -849,7 +1198,7 @@ For `NtQuerySystemInformation`, extract the SSN and execute the syscall instruct
 **Approach C — WMI Queries**:
 `SELECT NumberOfLogicalProcessors FROM Win32_Processor` returns CPU count via WMI, which takes a completely different code path than `GetSystemInfo`. Hooking both GetSystemInfo AND WMI would require the sandbox to intercept two unrelated subsystems. However, WMI queries are slow (~100ms) and pull in significant code mass.
 
-**This binary's approach**: Direct windows-sys imports (CFG-safe, linker-resolved) for all 5 checks. Using IAT-imported functions avoids both CFG issues and hookability concerns for most sandboxes (only kernel-level hooks can intercept linker-resolved imports).
+**This binary's approach**: Direct windows-sys imports (CFG-safe, linker-resolved) for all 5 sandbox checks. Execution uses `HeapCreate(HEAP_CREATE_ENABLE_EXECUTE)` + `HeapAlloc` instead of VirtualAlloc + VirtualProtect — the heap is executable from creation, eliminating the RW→RX transition that EDR monitors. `CreateThread`, `WaitForSingleObject`, and `CloseHandle` are declared via `extern "system"` (linker-resolved). Anti-debug is delegated to the common library's `bail_if_debugged()` module.
 
 ---
 
@@ -898,8 +1247,9 @@ Expected on hardened VM:
   - Sandbox check: CPU(4)=0, RAM(8GB)=0, Disk(100GB)=0,
     Uptime(30+min)=0, Screen(1920x1080)=0
   - Total score: 0 → below threshold of 3 → PROCEEDS to payload
-  - XOR decrypts shellcode, resolves APIs via apihash PEB walk
-  - VirtualAlloc(RW) → memcpy → VirtualProtect(RX) → CreateThread
+  - XOR decrypts shellcode via common::crypto::xor
+  - HeapCreate(HEAP_CREATE_ENABLE_EXECUTE) → HeapAlloc → memcpy → CreateThread
+  - No VirtualAlloc, no VirtualProtect — heap is executable from birth
   - MessageBox("GoodBoy") appears!
 ```
 
@@ -911,7 +1261,7 @@ All checks pass. The binary behaves identically on a hardened VM and a real work
 
 1. Open `anti-sandbox.exe` in x64dbg (with ScyllaHide enabled to pass anti-debug gates)
 2. Set a breakpoint on `GetSystemInfo` — this is the first sandbox check API
-3. Run (F9) — gates 1-6 pass (benign checks, GUI lifecycle, anti-debug), breakpoint hits at Gate 7
+3. Run (F9) — gates 1-4 pass (benign checks, GUI lifecycle, anti-debug), breakpoint hits at Gate 5
 4. Step through each check, observing register values:
    - After `GetSystemInfo`: `si.dwNumberOfProcessors` in memory (compare to threshold 2)
    - After `GlobalMemoryStatusEx`: `mem.ullTotalPhys` in memory (compare to 4GB)
@@ -928,15 +1278,15 @@ This exercise demonstrates that anti-sandbox checks are advisory, not enforced �
 
 ## Summary Table
 
-| Check Category | Checks | Weight | Detection Layer | Bypass Difficulty |
-|---------------|--------|--------|-----------------|-------------------|
-| Hardware | CPU, RAM, Disk, Uptime | +1 each | OS query | Easy (VM config) |
-| User/Environment | Username, Computer, Screen, Processes | +1 to +2 | OS query | Easy (rename/config) |
-| VM Artifacts | Registry, Files, MAC, Tools | +2 each | Filesystem/Registry | Medium (remove GA) |
-| Timing | Sleep acceleration | +3 | Behavioral | Hard (sandbox design) |
-| User Activity | Cursor movement, Recent files | +1 each | Behavioral | Medium (simulate) |
-| **Threshold** | | **≥ 3** | | |
-| **MITRE ATT&CK** | | | **T1497.001** (System Checks) | |
+| Check Category | Checks | Weight | In Binary? | Bypass Difficulty |
+|---------------|--------|--------|------------|-------------------|
+| Hardware | CPU, RAM, Disk, Uptime, Screen | +1 each | **Yes** (all 5) | Easy (VM config) |
+| User/Environment | Username, Computer, Processes | +1 to +2 | No (reference) | Easy (rename/config) |
+| VM Artifacts | Registry, Files, MAC, Tools | +2 each | No (reference) | Medium (remove GA) |
+| Timing | Sleep acceleration | +3 | No (reference) | Hard (sandbox design) |
+| User Activity | Cursor movement, Recent files | +1 each | No (reference) | Medium (simulate) |
+| **Threshold** | | **≥ 3** | **Yes** | |
+| **MITRE ATT&CK** | | | **T1497.001 + T1082** | |
 
 ### Common Misconceptions
 
@@ -947,13 +1297,13 @@ This exercise demonstrates that anti-sandbox checks are advisory, not enforced �
 | "A scoring threshold of 3 is too low" | With 5 checks each worth +1, a real workstation scores 0 and a default sandbox scores 3-5. The threshold of 3 catches 95%+ of sandboxes while having near-zero false positives on real systems. Higher thresholds miss more sandboxes |
 | "GetTickCount64 is the same as KUSER_SHARED_DATA" | Both return uptime, but GetTickCount64 is an API call (hookable by EDR) while KUSER_SHARED_DATA is a direct memory read (unhookable). This binary uses GetTickCount64 only (30-min threshold in check_sandbox). An advanced variant could add a KUSER_SHARED_DATA read at `0x7FFE0320` as a secondary unhookable check — see the Adversarial Thinking section |
 | "String-based VM checks are better than hardware checks" | String-based checks (username="sandbox", files="VBoxMouse.sys") are WORSE because the strings themselves are malware signatures. CrowdStrike ML flagged the binary at 60% just from containing "sandbox" and "VBoxMouse.sys" as string literals. Hardware checks use only numeric comparisons — invisible to string-based ML |
-| "CFG doesn't matter for sandbox checks" | Earlier versions using GetProcAddress-resolved function pointers crashed with STATUS_STACK_BUFFER_OVERRUN because the pointer wasn't in the CFG bitmap. This binary uses direct windows-sys imports (GetSystemInfo, etc.) which are CFG-safe because the linker adds them to the bitmap at compile time |
+| "CFG doesn't matter for sandbox checks" | Earlier versions using GetProcAddress-resolved function pointers crashed with STATUS_STACK_BUFFER_OVERRUN because the pointer wasn't in the CFG bitmap. This binary uses direct windows-sys imports for sandbox checks (GetSystemInfo, etc.) and `HeapCreate(HEAP_CREATE_ENABLE_EXECUTE)` for execution — both CFG-safe because the linker adds IAT entries to the bitmap at compile time |
 
 ### What Breaks at Stage 11 — The Bridge
 
 Stages 09-10 protect against analysis. Stage 11 adds **persistence** — surviving reboots. The payload doesn't just execute once; it installs itself to run again after the system restarts. Five persistence methods: Registry Run key, Scheduled Task, Startup folder, COM Hijacking, WMI Event Subscription.
 
-But there's a critical lesson: the persistence modules add ~124KB of offensive code that pushed ML classifiers over detection thresholds. In the final build, persistence was DISABLED to maintain 0/76.
+But there's a critical lesson: the persistence modules add ~124KB of offensive code that pushed ML classifiers over detection thresholds. In the final build, persistence was DISABLED to maintain a clean detection score.
 
 ### Knowledge Check (Additional)
 
@@ -966,7 +1316,7 @@ But there's a critical lesson: the persistence modules add ~124KB of offensive c
 
 </details>
 
-**7. The self-contained version removed all diagnostic file writes. How would you observe the sandbox score during analysis?**
+**7. The binary has no diagnostic file writes. How would you observe the sandbox score during analysis?**
 
 <details>
 <summary>Answer</summary>
@@ -987,10 +1337,10 @@ In earlier development versions, diagnostic files like `diaghost_5_sandbox_score
 
 | Technique | ID | How It's Used |
 |-----------|----|---------------|
-| Virtualization/Sandbox Evasion: System Checks | T1497.001 | CPU, RAM, disk, uptime, screen checks |
-| Debugger Evasion | T1622 | PEB + NtQIP + RDTSC + HW BP (from Stage 09) |
-| Reflective Code Loading | T1620 | XOR decrypt → VirtualAlloc → VirtualProtect → CreateThread |
-| Dynamic API Resolution | T1027.007 | 5 kernel32 APIs + 3 ntdll APIs via additive hash PEB walk |
+| Virtualization/Sandbox Evasion: System Checks | T1497.001 | CPU, RAM, disk, uptime, screen checks (Stage 10 focus) |
+| System Information Discovery | T1082 | GetSystemInfo, GlobalMemoryStatusEx, GetDiskFreeSpaceExW, GetTickCount64, GetSystemMetrics |
+| Debugger Evasion | T1622 | PEB + NtQIP + RDTSC + HW BP via common library (from Stage 09) |
+| Native API | T1106 | HeapCreate(EXECUTE) + HeapAlloc + CreateThread via extern declarations |
 | Masquerading | T1036 | Window class "DiagHostWnd" |
 
 ### Further Reading (2025-2026)

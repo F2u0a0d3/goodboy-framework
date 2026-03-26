@@ -14,9 +14,7 @@ The first stage with **automated environment detection** — 5 hardware-metric c
 | 4 | System Uptime | < 30 min | +1 (fresh boot) | 0 (hours/days) |
 | 5 | Screen Resolution | < 800×600 | +1 (minimal) | 0 (1920×1080) |
 
-Plus 7 anti-debug checks (from Stage 09) and GUI window lifecycle. Self-contained (no `common` library).
-
-**VT Score: 0/76** — achieved 2026-03-12.
+Plus 7 anti-debug checks (from Stage 09 via common library), GUI window lifecycle, and **HeapCreate-based execution** — no VirtualAlloc or VirtualProtect in IAT.
 
 ---
 
@@ -41,7 +39,8 @@ Plus 7 anti-debug checks (from Stage 09) and GUI window lifecycle. Self-containe
 | Scoring system | Binary pass/fail | **Weighted threshold (≥ 3 of 5)** |
 | System info APIs | Never used directly | **GetSystemInfo, GlobalMemoryStatusEx, GetDiskFreeSpaceExW, GetTickCount64, GetSystemMetrics** |
 | VM detection strings | N/A | **Intentionally avoided** (strings = AV signatures) |
-| Anti-debug | 7 checks in Stage 09 | **Inherited, same 7 checks** |
+| Memory allocation | VirtualAlloc + VirtualProtect (01-09) | **HeapCreate(EXECUTE) + HeapAlloc** — no VA/VP in IAT |
+| Anti-debug | 7 checks in Stage 09 | **Inherited via common library** |
 
 ---
 
@@ -49,8 +48,8 @@ Plus 7 anti-debug checks (from Stage 09) and GUI window lifecycle. Self-containe
 
 | File | Description |
 |------|-------------|
-| `LEARNING_PATH.md` | **1,008 lines** — 5 check deep dives, VM artifact reference, sandbox hardening guide, scoring calibration, YARA/Sigma rules, adversarial thinking challenges |
-| `anti-sandbox.exe` | The compiled binary (~264 KB, Rust, PE64) — exits silently in default sandbox VMs |
+| `LEARNING_PATH.md` | **1,358 lines** — 5 check deep dives, HeapCreate evasion, 3 Python scripts (sandbox scorer, IAT detector, heap hunter), VM artifact reference, sandbox hardening guide, YARA/Sigma rules, adversarial thinking challenges |
+| `anti-sandbox.exe` | The compiled binary (~258 KB, Rust, PE64) — exits silently in default sandbox VMs |
 
 ---
 
@@ -58,15 +57,13 @@ Plus 7 anti-debug checks (from Stage 09) and GUI window lifecycle. Self-containe
 
 | Property | Value |
 |----------|-------|
-| Language | Rust (self-contained, no shared library) |
+| Language | Rust (uses common library for anti-debug + benign code mass) |
 | Sandbox Detection | 5 hardware checks: CPU, RAM, disk, uptime, screen (threshold ≥ 3) |
-| Anti-Debug | 7 techniques: PEB×2, NtQIP×3, RDTSC, HW BP (from Stage 09) |
-| API Resolution | Additive hash PEB walk (kernel32 + ntdll) |
+| Anti-Debug | 7 techniques via common library: PEB×2, NtQIP×3, RDTSC, HW BP (from Stage 09) |
+| Execution | HeapCreate(HEAP_CREATE_ENABLE_EXECUTE) + HeapAlloc — no VirtualAlloc/VirtualProtect |
 | GUI Lifecycle | RegisterClassW + CreateWindowExW + message pump (behavioral camouflage) |
 | Shellcode | 302-byte MessageBox("GoodBoy"), XOR encrypted |
-| Memory | W^X discipline (RW → RX) |
-| Binary Size | ~264 KB |
-| VT Score | 0/76 |
+| Binary Size | ~258 KB |
 
 ---
 
@@ -99,7 +96,7 @@ This is **Stage 10** of 15 — a **HARD** stage.
 
 ## About the Goodboy Framework
 
-15-stage progressive Windows malware development & analysis course. All binaries achieved 0/76 on VirusTotal.
+15-stage progressive Windows malware development & analysis course.
 
 ## License
 

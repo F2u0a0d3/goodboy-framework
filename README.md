@@ -164,7 +164,7 @@ The Learning Paths document the full forensic timeline of each binary's VT histo
 | Metric | Value |
 |--------|-------|
 | Stages | 15 (10 released, 5 planned) |
-| Total learning content | 11,200+ lines (released stages) |
+| Total learning content | 12,500+ lines (released stages) |
 | Exercises | 60+ hands-on (released stages) |
 | YARA rules | 18+ (with adversarial countermeasures) |
 | Sigma rules | 7+ (behavioral detection) |
