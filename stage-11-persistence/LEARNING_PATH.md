@@ -27,8 +27,9 @@
 
  This binary also uses direct IAT imports (VirtualAlloc, VirtualProtect,
  CreateThread) instead of apihash — because MEMORY.md proved that 5+ apihash
- PEB walks push CrowdStrike ML to 60% confidence. Only 2 apihash calls remain
- (ExitProcess in anti-debug and anti-sandbox bail-out paths).
+ PEB walks push CrowdStrike ML to 60% confidence. Only 2 explicit apihash
+ calls in main.rs (ExitProcess in analysis-tool-scan and anti-sandbox bail
+ paths). The common library's bail_if_debugged() adds more internally.
 ```
 
 ---
@@ -76,7 +77,7 @@ fn main() {
     // ════════════ GATES 1-6: Same as Stages 09-10 ════════════
     // Gate 1: init_app_environment() — env var validation (3/5 must exist)
     // Gate 2: benign::preflight() — code dilution (std collections)
-    // Gate 3: KUSER_SHARED_DATA uptime > 5 min
+    // Gate 3: KUSER_SHARED_DATA TickCountQuad > 300,000 (~78 min)
     // Gate 4: run_window_lifecycle() — "StartMgrW" GUI class
     // Gate 5: bail_if_debugged() — 7 anti-debug checks
     // Gate 6: check_analysis_tools() — 27 tool names
@@ -274,18 +275,7 @@ fn build_run_path() -> Vec<u16> {
 
 ### Why Not `obf!()` Macro?
 
-```
-obf!("Software\\Microsoft\\...") approach:
-  → XOR encryption loop at runtime
-  → CrowdStrike ML flags the XOR decryption pattern at 60% confidence
-  → WORSE than plaintext for ML classifiers
-
-u16 hex array approach:
-  → No encryption, no decryption loop
-  → Just array concatenation (Vec::extend_from_slice)
-  → Appears as generic data initialization
-  → ML classifiers see normal Vec operations
-```
+The `obf!()` macro generates XOR decryption loops that CrowdStrike ML flags at 60% confidence — **worse than plaintext** for ML classifiers (see Stage 06 for the full analysis). The u16 hex array approach uses no encryption at all — just `Vec::extend_from_slice` array concatenation, which ML classifiers see as normal data initialization.
 
 ### Exercise 2.1: String Hunting
 
@@ -333,7 +323,7 @@ Gate 2: Benign Preflight
   └─ Inflates benign code ratio past ML thresholds
 
 Gate 3: KUSER_SHARED_DATA Uptime
-  └─ Read 0x7FFE0320 (InterruptTime) > 5 minutes
+  └─ Read 0x7FFE0320 (TickCountQuad) > 300,000 ticks (~78 minutes)
   └─ Filters fast-forwarding sandboxes that skip real time
 
 Gate 4: GUI Window Lifecycle
@@ -413,22 +403,7 @@ After all 7 gates pass:
 
 ### Why Direct IAT Imports?
 
-The injection APIs (`VirtualAlloc`, `VirtualProtect`, `CreateThread`, `WaitForSingleObject`, `CloseHandle`) are imported directly from `windows-sys` rather than resolved via API hashing:
-
-```
-API hashing approach (apihash):
-  → Each call = PEB.Ldr traversal + export table parsing
-  → 5 PEB walks = cumulative ML signal
-  → CrowdStrike flags 5+ apihash resolutions at 60% confidence
-
-Direct IAT import approach:
-  → APIs appear in the PE import table (IAT)
-  → Indistinguishable from any normal Win32 application
-  → VirtualAlloc is imported by thousands of legitimate programs
-  → No PEB walks, no behavioral signals
-```
-
-The binary reserves apihash for **only 2 calls** — both `ExitProcess` in the anti-debug and anti-sandbox gates — where direct import would look suspicious (why would a legitimate app resolve ExitProcess dynamically?).
+Same rationale as Section 0 (lines 157-173): direct IAT imports for common APIs (VirtualAlloc, VirtualProtect, CreateThread) are less suspicious than apihash PEB walks, which accumulate as ML signals. Apihash is reserved for the 2 bail-path ExitProcess calls only.
 
 ### Exercise 4.1: IAT Analysis
 
@@ -482,15 +457,13 @@ First 4 bytes:  0x0d ^ 0xe4 = 0xe9 (JMP opcode — shellcode prologue)
 
 ### Why XOR over AES?
 
-```
-AES (common library):
-  → RC4/StreamCipher pattern flagged by ESET as "malware-grade crypto"
-  → 256-byte S-box initialization is a behavioral signal
-  → Larger code footprint
+For the full XOR vs AES comparison, see Stage 02 Section 1. The key evasion lesson specific to this project: the common library's RC4/StreamCipher (256-byte S-box initialization) is flagged by ESET as "malware-grade crypto." XOR is a simple for-loop with no S-box, no crypto library code — indistinguishable from generic data processing.
 
-XOR:
-  → Simple for-loop, no S-box, no crypto library code
-  → Indistinguishable from generic data processing
+```
+ESET-specific lesson (NOT in Stage 02):
+  → common::crypto::aes uses a custom StreamCipher with 256-byte S-box
+  → ESET classifies this as Win64/GenKryptik.HPRQ
+  → Switching to XOR killed the detection instantly
   → Smaller binary, fewer ML features
 ```
 
@@ -525,31 +498,13 @@ The test stub proves the injection chain works (VirtualAlloc → copy → Virtua
 
 ### Memory Lifecycle
 
-```
-1. VirtualAlloc(NULL, size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
-   → Allocate RW memory (no execute permission yet)
+This binary uses the same `VirtualAlloc(RW) → copy → VirtualProtect(RX) → CreateThread` chain introduced in Stage 01 (see Stage 01 Section 1.2 for the full pipeline walkthrough). The **key difference** in Stage 11: all execution APIs are direct IAT imports (not apihash-resolved), which changes the detection surface from "hidden API resolution" to "standard Win32 app behavior."
 
-2. copy_nonoverlapping(shellcode → allocated_memory)
-   → Write decrypted shellcode to RW memory
-
-3. VirtualProtect(addr, size, PAGE_EXECUTE_READ, &old_protection)
-   → Change permissions: RW → RX (never RWX)
-
-4. CreateThread(NULL, 0, addr_as_fn_ptr, NULL, 0, NULL)
-   → Execute shellcode in new thread
-
-5. WaitForSingleObject(thread, INFINITE)
-   → Wait for shellcode to complete
-
-6. CloseHandle(thread)
-   → Cleanup thread handle
-```
-
-**Key evasion detail**: The memory is never `PAGE_EXECUTE_READWRITE` (RWX). The `RW → RX` transition via `VirtualProtect` is the standard pattern used by JIT compilers (V8, .NET CLR). RWX allocations are a strong malware signal.
+The memory is never `PAGE_EXECUTE_READWRITE` (RWX) — the `RW → RX` transition avoids the strongest EDR signal (see Stage 10's HeapCreate section for why RWX alternatives exist).
 
 ### Exercise 6.1: Memory Forensics
 
-**Question**: During memory forensics, you find a `PAGE_EXECUTE_READ` region that was originally `PAGE_READWRITE`. What questions should you investigate?
+**Question**: Building on Stage 01's RW→RX detection rules, this exercise focuses on the forensic investigation workflow. You find a `PAGE_EXECUTE_READ` region that was originally `PAGE_READWRITE`. What questions should you investigate?
 
 <details>
 <summary>Answer</summary>
@@ -1323,7 +1278,7 @@ If any breadcrumb is missing, the binary stopped at that gate. Common failure po
 | Anti-debug | PEB + NtQIP + RDTSC + HW BP | ExitProcess via apihash |
 | Anti-sandbox | CPU/RAM/Disk/Uptime/Screen | Inline checks, no suspicious strings |
 | GUI lifecycle | RegisterClassW + message loop | Legitimate Win32 API pattern |
-| Cleanup | RegDeleteValueW after execution | No artifacts remain |
+| Cleanup | RegDeleteValueW after execution | Registry value removed (Sysmon/forensic logs survive) |
 | Proof text | Generic descriptions only | No offensive API names in .rdata |
 
 ### MITRE ATT&CK Mapping
