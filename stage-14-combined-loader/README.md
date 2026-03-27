@@ -51,7 +51,7 @@ This binary demonstrates the **maximum evasion surface** achievable — and teac
 
 | File | Description |
 |------|-------------|
-| `LEARNING_PATH.md` | **1,176 lines** — 7-phase architecture, MBA XOR deep dive, 2 YARA rules, Sigma rule, Python analyzer, defense hardening, 4 exercises, adversarial challenges |
+| `LEARNING_PATH.md` | **1,319 lines** — 7-phase architecture, MBA XOR deep dive, 2 YARA rules, Sigma rule, 3 Python scripts (multi-phase analyzer, MBA key extractor, hex payload decoder), defense hardening, 4 exercises, adversarial challenges |
 | `combined-loader.exe` | The compiled binary (~335 KB, Rust, PE64) — requires browser + user interaction to proceed |
 
 ---

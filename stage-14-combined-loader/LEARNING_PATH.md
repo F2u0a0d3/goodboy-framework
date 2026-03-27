@@ -885,6 +885,149 @@ else:
     print("\033[92mNo strong combined loader indicators\033[0m")
 ```
 
+### Python Script: MBA XOR Key Extractor (dynamic)
+
+```python
+#!/usr/bin/env python3
+"""Extract the AES key from a running combined-loader process.
+Targets the derive_key() return value by scanning for 32-byte high-entropy regions
+on the stack near known fragment function return addresses."""
+
+import ctypes
+import ctypes.wintypes as wt
+import math, sys, os
+
+kernel32 = ctypes.windll.kernel32
+
+PROCESS_VM_READ = 0x0010
+PROCESS_QUERY_INFORMATION = 0x0400
+
+def read_memory(handle, address, size):
+    buf = (ctypes.c_ubyte * size)()
+    read = ctypes.c_size_t()
+    ok = kernel32.ReadProcessMemory(handle, address, buf, size, ctypes.byref(read))
+    return bytes(buf[:read.value]) if ok else None
+
+def entropy(data):
+    if not data: return 0.0
+    freq = [0]*256
+    for b in data: freq[b] += 1
+    return -sum(f/len(data)*math.log2(f/len(data)) for f in freq if f)
+
+if len(sys.argv) < 2:
+    print(f"Usage: {sys.argv[0]} <pid>")
+    print(f"  Attach to the combined-loader process after it passes Phase 4")
+    print(f"  The 32-byte AES key exists briefly on the stack after derive_key()")
+    sys.exit(1)
+
+pid = int(sys.argv[1])
+handle = kernel32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
+if not handle:
+    print(f"Failed to open PID {pid}")
+    sys.exit(1)
+
+print(f"Scanning PID {pid} for 32-byte high-entropy regions (potential AES key)...")
+
+# Scan stack region (typically 0x00000000`00100000 - 0x00000000`00800000)
+# and heap regions for 32-byte key candidates
+candidates = []
+for base_addr in range(0x100000, 0x800000, 0x1000):
+    data = read_memory(handle, base_addr, 4096)
+    if not data or len(data) < 4096:
+        continue
+    # Scan for 32-byte windows with high entropy
+    for off in range(0, len(data) - 32, 8):
+        chunk = data[off:off+32]
+        ent = entropy(chunk)
+        if 6.5 < ent < 8.0:  # Key-like entropy (not random, not plaintext)
+            candidates.append((base_addr + off, chunk, ent))
+
+kernel32.CloseHandle(handle)
+
+if candidates:
+    print(f"\n{len(candidates)} candidate 32-byte regions found:")
+    for addr, chunk, ent in candidates[:10]:
+        hex_str = ' '.join(f'{b:02x}' for b in chunk)
+        print(f"  0x{addr:08X}: entropy={ent:.2f}")
+        print(f"    {hex_str}")
+    print(f"\n  Try each candidate as AES-256 key against the hex-encoded ciphertext")
+else:
+    print("  No high-entropy 32-byte regions found (key may have been zeroed)")
+```
+
+### Python Script: Hex Payload Decoder
+
+```python
+#!/usr/bin/env python3
+"""Extract and decode hex-encoded payloads from PE .rdata section.
+Detects the Stage 14 pattern: long hex strings storing AES ciphertext."""
+
+import struct, sys, os, re, math
+
+if len(sys.argv) < 2:
+    print(f"Usage: {sys.argv[0]} <combined-loader.exe>")
+    sys.exit(1)
+
+with open(sys.argv[1], "rb") as f:
+    data = f.read()
+
+# Find .rdata section
+e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+num_sec = struct.unpack_from("<H", data, e_lfanew + 6)[0]
+opt_size = struct.unpack_from("<H", data, e_lfanew + 20)[0]
+sec_off = e_lfanew + 24 + opt_size
+
+rdata = None
+rdata_off = 0
+for i in range(num_sec):
+    s = sec_off + i * 40
+    name = data[s:s+8].rstrip(b"\x00")
+    if name == b".rdata":
+        rdata_off = struct.unpack_from("<I", data, s + 20)[0]
+        rdata_sz = struct.unpack_from("<I", data, s + 16)[0]
+        rdata = data[rdata_off:rdata_off + rdata_sz]
+        break
+
+if rdata is None:
+    print("No .rdata section found")
+    sys.exit(1)
+
+print(f"Scanning .rdata ({len(rdata):,d} bytes) for hex-encoded payloads...")
+
+# Find long hex strings (>100 chars of [0-9a-f])
+hex_pattern = re.compile(rb'([0-9a-f]{100,})')
+matches = list(hex_pattern.finditer(rdata))
+
+print(f"Found {len(matches)} hex blob(s)\n")
+
+for i, m in enumerate(matches):
+    hex_str = m.group(1)
+    offset = rdata_off + m.start()
+    decoded = bytes(int(hex_str[j:j+2], 16) for j in range(0, len(hex_str), 2))
+    ent = -sum(f/len(decoded)*math.log2(f/len(decoded))
+               for f in [decoded.count(bytes([b])) for b in range(256)] if f) if decoded else 0
+
+    print(f"Blob {i+1}:")
+    print(f"  File offset: 0x{offset:X}")
+    print(f"  Hex length:  {len(hex_str)} chars")
+    print(f"  Decoded:     {len(decoded)} bytes")
+    print(f"  Entropy:     {ent:.4f}")
+    print(f"  First 16:    {' '.join(f'{b:02x}' for b in decoded[:16])}")
+    print(f"  Last 16:     {' '.join(f'{b:02x}' for b in decoded[-16:])}")
+
+    if ent > 7.0:
+        print(f"  \033[91m[ENCRYPTED]\033[0m High entropy — likely AES/RC4 ciphertext")
+    elif ent > 5.0:
+        print(f"  \033[93m[ENCODED]\033[0m Medium entropy — possibly compressed or encoded")
+    else:
+        print(f"  \033[92m[PLAINTEXT]\033[0m Low entropy")
+
+    # Check for AES block alignment (16-byte blocks)
+    if len(decoded) % 16 == 0:
+        print(f"  \033[93m[AES-ALIGNED]\033[0m Length is multiple of 16 (AES block size)")
+    print()
+```
+
 ### Section 7B: Defense Hardening — Detecting Multi-Phase Loaders
 
 ```
