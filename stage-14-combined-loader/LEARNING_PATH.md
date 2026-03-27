@@ -422,7 +422,7 @@ Phase 2:                              Phase 3:
 └─ T1562.001 Disable AMSI
 
 Phase 4:                              Phase 5:
-├─ T1140    Deobfuscate/Decode        ├─ T1574.001 DLL Stomping
+├─ T1140    Deobfuscate/Decode        ├─ T1574.002 DLL Side-Loading
 ├─ T1027.013 Encrypted Payload        └─ T1055.001 DLL Injection
 └─ T1027.009 Embedded Payloads
 ```
@@ -445,7 +445,7 @@ Time ─────────────────────────
   │      │         │                  │    └─ Fake API activity
   │      │         │                  └─ HW breakpoints on ETW/AMSI
   │      │         └─ Blocks until 3 clicks + 2 switches + browser
-  │      └─ Sandbox(15) + Debug(7) + Tools(27)
+  │      └─ Sandbox(3 inline) + Debug(7) + Tools(27)
   └─ Breakpoint scan + mutex + install check
 ```
 
@@ -642,8 +642,7 @@ Phase 1: Environment Validation + Benign Preflight
   │
   ├─ inline sandbox check
   │    3 inline hardware checks (CPU cores < 2, RAM < 4GB, uptime < 30min).
-  │    computer name patterns, screen resolution, MAC address,
-  │    VM registry keys, VM files, VM processes, analysis processes,
+  │    Score >= 3 means all three failed → return (exit silently).
   │    sleep acceleration, cursor movement, recent files
   │    Score >= 3 → ExitProcess via apihash
   │
@@ -1104,7 +1103,7 @@ This is the **fundamental weakness** of all runtime key derivation: no matter ho
 
 Every subsequent phase operates independently — patching Phase 0 doesn't disable any later gate:
 
-- **Phase 1 (bail_if_sandbox)**: Still runs 3 inline sandbox checks (CPU, RAM, uptime). The analyst's VM must pass CPU, RAM, disk, uptime, screen, and other hardware fingerprints.
+- **Phase 1 (inline sandbox)**: Still runs 3 inline hardware checks (CPU cores >= 2, RAM >= 4GB, uptime >= 30min). The analyst's VM must pass all three.
 - **Phase 1 (bail_if_debugged)**: Still checks PEB.BeingDebugged, NtQueryInformationProcess debug ports, RDTSC timing, and hardware breakpoints. The analyst needs ScyllaHide or equivalent anti-anti-debug.
 - **Phase 1 (check_analysis_tools)**: Still enumerates processes for 27 tool names. The analyst must rename or hide their tools.
 - **Phase 1.5 (user interaction)**: Still requires 3 clicks + 2 window switches + browser. The analyst must script genuine user interaction. This is the hardest to simulate — most analysts skip it and wonder why the binary "does nothing."
@@ -1286,7 +1285,7 @@ Stage 15 also introduces the **browser-gate** and **tab-activity gate** — a tr
 |-----------|----|---------------|
 | Execution Guardrails | T1480 | Phase 0: breakpoint scan, mutex, install check — binary gates execution on environment conditions |
 | Native API | T1106 | CreateMutexW for singleton, CreateToolhelp32Snapshot for process enum |
-| Virtualization/Sandbox Evasion: System Checks | T1497.001 | Phase 1: 3 inline sandbox checks (CPU, RAM, uptime) (CPU, RAM, disk, uptime, screen, username, etc.) |
+| Virtualization/Sandbox Evasion: System Checks | T1497.001 | Phase 1: 3 inline hardware checks (CPU cores, RAM, uptime) |
 | Virtualization/Sandbox Evasion: User Activity | T1497.002 | Phase 1.5: mouse clicks, window switches, browser presence |
 | Debugger Evasion | T1622 | Phase 1: PEB, NtGlobalFlag, NtQueryInformationProcess, RDTSC, DR0-DR3 |
 | Process Discovery | T1057 | Phase 1: 27 analysis tool names via CreateToolhelp32Snapshot |
