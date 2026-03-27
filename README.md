@@ -47,7 +47,7 @@ Each stage adds one new offensive technique on top of the previous. Each Learnin
 | [**12**](stage-12-module-stomping/) | **Module Stomping** | Overwrite DLL .text at entry point, CFG-valid execution, inline PE parsing, pe-sieve evasion | 1,230 | Released |
 | [**13**](stage-13-sleep-obfuscation/) | **Sleep Obfuscation** | XOR encrypt during sleep, VirtualProtect RX↔RW cycling, 95% scanner miss rate | 1,254 | Released |
 | [**14**](stage-14-combined-loader/) | **Combined Loader** | 7-phase attack chain, MBA XOR key derivation, module stomping with 4-DLL fallback, user interaction trigger | 1,176 | Released |
-| 15 | C2 Agent | Full command-and-control with encrypted HTTPS beaconing | — | Planned |
+| [**15**](stage-15-c2-agent/) | **C2 Agent** | Full C2 with encrypted HTTP beaconing, browser-gate, 0/71 VT, 2,152-line LP with 18 sections, 20 exercises, APT parallels, IR playbook | 2,152 | Released |
 
 ---
 
@@ -163,12 +163,12 @@ The Learning Paths document the full forensic timeline of each binary's VT histo
 
 | Metric | Value |
 |--------|-------|
-| Stages | 15 (14 released, 1 planned) |
-| Total learning content | 17,400+ lines (released stages) |
-| Exercises | 60+ hands-on (released stages) |
-| YARA rules | 18+ (with adversarial countermeasures) |
-| Sigma rules | 7+ (behavioral detection) |
-| Python scripts | 25+ (solvers, scanners, crypto tools) |
+| Stages | 15 (all released) |
+| Total learning content | 19,500+ lines |
+| Exercises | 80+ hands-on |
+| YARA rules | 20+ (with adversarial countermeasures) |
+| Sigma rules | 11+ (behavioral + Sysmon detection) |
+| Python scripts | 28+ (solvers, scanners, crypto tools, mock C2) |
 | AV engines tested | 76 |
 | Languages | Rust (binaries), Python (tooling) |
 | Platform | Windows x64 |
@@ -180,7 +180,7 @@ The Learning Paths document the full forensic timeline of each binary's VT histo
 > **EDUCATIONAL USE ONLY**
 
 - Every binary's payload is `MessageBox("GoodBoy")` — a harmless dialog box
-- No network activity, no persistence, no system modifications
+- No network activity (except Stage 15 which beacons to localhost), no persistence, no system modifications
 - **WRITE** code on your host machine. **EXECUTE** only in isolated VMs
 - Do NOT submit binaries to VirusTotal — this trains AV against them (see "sample burning")
 
