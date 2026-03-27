@@ -183,9 +183,9 @@ The value at `0x7FFE0320` is `KUSER_SHARED_DATA.TickCountQuad` — a tick counte
 ```
 Compile-time:                        Runtime (after 7 gates):
 +---------------------------+        +---------------------------+
-| ENCRYPTED_SHELLCODE       |        | shellcode (decrypted)     |
+| ENCRYPTED_SHELLCODE       |        | shellcode (decrypted)      |
 | [0x31, 0xf5, 0x29, 0xa0, ...] (302 bytes) |  XOR   | [0xe9, 0xbe, 0x00, 0x00, ...] (JMP shellcode) |
-| (302 bytes, XOR'd)          | -----> | E9 BE 00 00 (JMP shellcode)|
+| (302 bytes, XOR'd)        | -----> | E9 BE 00 00 (JMP shellcode)|
 +---------------------------+  KEY   +---------------------------+
                                |
                     XOR_KEY (16 bytes):
@@ -375,10 +375,10 @@ VirtualAlloc(RW)
   |
   +--- Cycle 0 --------+--- Cycle 1 --------+--- Cycle 2 --------+
   |                     |                     |                     |
-  RX->RW  encrypt      RX->RW  encrypt      RX->RW  encrypt      |
+  RX->RW  encrypt      RX->RW  encrypt      RX->RW  encrypt         |
   |       Sleep(50)     |       Sleep(50)     |       Sleep(50)     |
   |       decrypt       |       decrypt       |       decrypt       |
-  RW->RX               RW->RX               RW->RX               |
+  RW->RX               RW->RX               RW->RX                  |
   +---------------------+---------------------+---------------------+
                                                                     |
                                                             CreateThread(RX)
@@ -625,21 +625,21 @@ main()
 
 ```
 +----------------------------------------------------------+
-| Sleep Obfuscation Key Concepts                            |
+| Sleep Obfuscation Key Concepts                           |
 +----------------------------------------------------------+
 |                                                          |
-| 1. THE CORE PROBLEM                                     |
+| 1. THE CORE PROBLEM                                      |
 |    Sleeping payload = static target for memory scanners  |
 |    Solution: encrypt payload + change permissions        |
 |    during sleep, decrypt + restore before execution      |
 |                                                          |
-| 2. XOR IS IDEAL FOR SLEEP ENCRYPTION                    |
+| 2. XOR IS IDEAL FOR SLEEP ENCRYPTION                     |
 |    Self-inverse: encrypt == decrypt (same operation)     |
 |    No complex state (no S-box, no block cipher)          |
 |    Minimal code footprint (avoids ML detection)          |
 |    No suspicious imports                                 |
 |                                                          |
-| 3. DUAL-KEY ARCHITECTURE                                |
+| 3. DUAL-KEY ARCHITECTURE                                 |
 |    XOR_KEY: decrypts on-disk encrypted shellcode         |
 |    SLEEP_KEY: encrypts/decrypts payload during sleep     |
 |    Different keys = defense-in-depth                     |
@@ -650,13 +650,13 @@ main()
 |    Never:    RWX (violation of W^X)                      |
 |    Order: write before protect, protect before execute   |
 |                                                          |
-| 5. DETECTION SURFACE                                    |
-|    VirtualProtect cycling (RX<->RW) is the main IOC     |
+| 5. DETECTION SURFACE                                     |
+|    VirtualProtect cycling (RX<->RW) is the main IOC      |
 |    ETW can correlate permission changes with Sleep()     |
 |    Entropy analysis catches encrypted->decrypted shifts  |
 |    But: short cycles + small payload = hard to catch     |
 |                                                          |
-| 6. EVASION LAYERING                                     |
+| 6. EVASION LAYERING                                      |
 |    Sleep obfuscation alone is not enough                 |
 |    7-gate gauntlet prevents analysis environment exec    |
 |    apihash hides API usage from IAT analysis             |
