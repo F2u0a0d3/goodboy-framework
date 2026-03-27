@@ -109,24 +109,24 @@ By the end of this module, you will be able to:
 
 ```
 Loader (Stages 01-14):          C2 Agent (Stage 15):
-+---------------------+        +-------------------------------+
-| Start               |        | Start                         |
-| |                   |        | |                             |
-| Evasion checks      |        | 4 benign framework modules   |
-| |                   |        | |                             |
-| Decrypt shellcode   |        | GUI lifecycle (Win32 window)  |
-| |                   |        | |                             |
-| Execute             |        | Startup delay (5-15s)         |
-| |                   |        | |                             |
-| Exit                |        | wait_for_user_activity()      |
-+---------------------+        | |                             |
++---------------------+         +-------------------------------+
+| Start               |         | Start                         |
+| |                   |         | |                             |
+| Evasion checks      |         | 4 benign framework modules    |
+| |                   |         | |                             |
+| Decrypt shellcode   |         | GUI lifecycle (Win32 window)  |
+| |                   |         | |                             |
+| Execute             |         | Startup delay (5-15s)         |
+| |                   |         | |                             |
+| Exit                |         | wait_for_user_activity()      |
++---------------------+         | |                             |
                                 | +---- Beacon Loop ----------+ |
   Single execution.             | | Browser active?           | |
   No persistence.               | | yes -> send_report()      | |
-  No network comms.             | |   Parse command            | |
-                                | |   Execute + store result   | |
-                                | | no -> skip silently        | |
-                                | | Sleep (42-78s jittered)    | |
+  No network comms.             | |   Parse command           | |
+                                | |   Execute + store result  | |
+                                | | no -> skip silently       | |
+                                | | Sleep (42-78s jittered)   | |
                                 | +--- Loop back -------------+ |
                                 |                               |
                                 | Exits when:                   |
@@ -160,27 +160,27 @@ All return values flow into the startup delay computation, preventing LTO elimin
 
 ```
 Configuration Layer:
-+--------------------------------------------------+
++---------------------------------------------------+
 | Runtime functions:                                |
-|   svc_endpoint() -> "127.0.0.1"                  |
+|   svc_endpoint() -> "127.0.0.1"                   |
 |   svc_path()     -> "/api/v1/telemetry"           |
 |   svc_port()     -> 8443                          |
-|                                                  |
-| Derived values:                                  |
+|                                                   |
+| Derived values:                                   |
 |   machine_id()        -> custom hash of           |
 |     COMPUTERNAME + USERNAME                       |
-|     seed=0xA3B1C4D7, mul=0x1B873593              |
-|     format: "{:08X}" (raw hex, e.g. "C117B920")  |
-|                                                  |
+|     seed=0xA3B1C4D7, mul=0x1B873593               |
+|     format: "{:08X}" (raw hex, e.g. "C117B920")   |
+|                                                   |
 |   derive_session_key() -> 32-byte PRNG key        |
 |     seed=0x5A3CF7E1                               |
-|     mul=0x6C7AC8E3, add=0x4B2D9F71               |
-|                                                  |
-| Plain constants:                                 |
-|   INTERVAL_MS  = 60,000 (60 seconds)             |
+|     mul=0x6C7AC8E3, add=0x4B2D9F71                |
+|                                                   |
+| Plain constants:                                  |
+|   INTERVAL_MS  = 60,000 (60 seconds)              |
 |   JITTER_PCT   = 30     (+/-30%)                  |
 |   MAX_RETRIES  = 10     (then shutdown)           |
-+--------------------------------------------------+
++---------------------------------------------------+
 ```
 
 ### Session Struct
@@ -230,18 +230,18 @@ Beacon Flow:
     |  User-Agent: Chrome/131.0.0.0        |
     |  Body: "a3f5b8d1..." (hex)           |
     |                                      |
-    |                           4. Hex decode
-    |                           5. XOR decrypt
-    |                           6. Parse check-in
-    |                           7. Build command JSON
-    |                           8. XOR encrypt
-    |                           9. Hex encode
+    |  4. Hex decode                       |
+    |  5. XOR decrypt                      |
+    |  6. Parse check-in                   |
+    |  7. Build command JSON               |
+    |  8. XOR encrypt                      |
+    |  9. Hex encode                       |
     |                                      |
     |  <-------------- 200 OK ------------ |
     |  Body: "f7c2e4a9..." (hex)           |
     |                                      |
     |  10. Parse HTTP headers              |
-    |  11. Read Content-Length body         |
+    |  11. Read Content-Length body        |
     |  12. Hex decode                      |
     |  13. XOR decrypt                     |
     |  14. Parse command JSON              |
@@ -512,7 +512,7 @@ C2 Beacon Traffic Pattern:
 | - Response body: hex-only                             |
 | - Content-Type: application/json (but body isn't JSON)|
 | - Chrome 131 User-Agent                               |
-| - Interval: ~60s with +/-30% jitter (42-78s)         |
+| - Interval: ~60s with +/-30% jitter (42-78s)          |
 | - Destination: non-standard port (8443)               |
 | - Plain HTTP (no TLS)                                 |
 +-------------------------------------------------------+
@@ -1279,35 +1279,35 @@ Each AV engine detects at a different layer. Fixing code doesn't help against PE
 
 ```
 +-----------------------------------------------------------+
-| C2 Agent Architecture                                       |
+| C2 Agent Architecture                                     |
 +-----------------------------------------------------------+
 |                                                           |
-| 1. COMMUNICATIONS                                        |
+| 1. COMMUNICATIONS                                         |
 |    XOR encrypt -> hex encode -> HTTP POST via TcpStream   |
 |    No WinHTTP, no WinINet — pure std::net                 |
 |    Chrome 131 User-Agent for traffic blending             |
 |    /api/v1/telemetry path mimics legitimate API           |
 |                                                           |
-| 2. COMMAND DISPATCH                                      |
+| 2. COMMAND DISPATCH                                       |
 |    9 commands via single-char type codes                  |
 |    No offensive vocabulary in binary                      |
 |    Shell via COMSPEC (no hardcoded cmd.exe)               |
-|    Process list via existing ToolHelp imports              |
+|    Process list via existing ToolHelp imports             |
 |                                                           |
-| 3. SANDBOX BYPASS                                        |
+| 3. SANDBOX BYPASS                                         |
 |    Browser-gate: only beacon when browser is running      |
 |    Tab-activity: 3 unique titles proves human             |
 |    Startup delay: 5-15s (GetTickCount-based)              |
 |                                                           |
-| 4. ML EVASION                                            |
+| 4. ML EVASION                                             |
 |    660KB binary (benign size range)                       |
 |    4 framework modules pull in std::net/sync/thread       |
 |    ws2_32 + user32 + shell32 + version.dll IAT            |
 |    GUI window lifecycle (STATIC class + message pump)     |
 |                                                           |
-| 5. PE FINGERPRINT ELIMINATION                            |
+| 5. PE FINGERPRINT ELIMINATION                             |
 |    Rich header cloned from ApplicationFrameHost.exe       |
-|    Linker 14.38, OS 10.0, Subsystem 10.0                 |
+|    Linker 14.38, OS 10.0, Subsystem 10.0                  |
 |    Zero Rust strings (/rustc/, .rs, panicking)            |
 |    Authenticode from non-svchost Microsoft binary         |
 |                                                           |
